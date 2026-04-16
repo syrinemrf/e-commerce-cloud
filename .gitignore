@@ -1,0 +1,48 @@
+# Environment
+.env
+*.env
+
+# Data files (generated locally)
+data/raw/
+data/clean/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# GCP credentials (never commit)
+*.json
+service-account*.json
+key.json
+
+# Beam temp files
+/tmp/
