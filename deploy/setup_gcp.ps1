@@ -12,13 +12,11 @@ $CLEAN_DIR = Join-Path $PSScriptRoot "..\data\clean"
 function Invoke-Step([string]$Desc, [scriptblock]$Block) {
     if ($DryRun) { Write-Host "[DRY-RUN] $Desc" -ForegroundColor Yellow; return }
     Write-Host "[EXEC] $Desc" -ForegroundColor Cyan
-    try { & $Block } catch { Write-Warning "Step warning: $_" }
+    try { & $Block } catch { Write-Warning "Warning: $_" }
 }
 
 function Show-Section([string]$Title) {
-    Write-Host ""
-    Write-Host "--- $Title ---" -ForegroundColor Green
-    Write-Host ""
+    Write-Host ""; Write-Host "--- $Title ---" -ForegroundColor Green; Write-Host ""
 }
 
 Show-Section "1. Verify gcloud auth"
@@ -68,19 +66,33 @@ Invoke-Step "Create DLQ topic" {
     gcloud pubsub topics create $PUBSUB_TOPIC_DLQ --project=$PROJECT_ID 2>$null
 }
 
-Show-Section "8. Create BigQuery dataset $DATASET"
-Invoke-Step "Create dataset" {
-    bq --location=EU mk --dataset --description="E-commerce analytics GCP free tier" --project_id=$PROJECT_ID "${PROJECT_ID}:${DATASET}" 2>$null
+Show-Section "8. Create BigQuery dataset $DATASET (via Python SDK - no bq CLI wizard)"
+Invoke-Step "Create dataset via Python" {
+    python -c @"
+from google.cloud import bigquery
+bq = bigquery.Client(project='$PROJECT_ID')
+ds = bigquery.Dataset('${PROJECT_ID}.${DATASET}')
+ds.location = 'EU'
+bq.create_dataset(ds, exists_ok=True)
+print('Dataset OK:', ds.dataset_id)
+"@
 }
 
-Show-Section "9. Upload cleaned CSVs to GCS"
-if (Test-Path $CLEAN_DIR) {
-    Get-ChildItem -Path $CLEAN_DIR -Filter "*.csv" | ForEach-Object {
-        $f = $_.FullName; $n = $_.Name
-        Invoke-Step "Upload $n" { gcloud storage cp $f "gs://$BUCKET/raw/$n" }
-    }
-} else {
-    Write-Warning "Clean dir not found at $CLEAN_DIR. Run prepare_data.py first."
+Show-Section "9. Upload cleaned CSVs to GCS (via Python SDK)"
+Invoke-Step "Upload CSVs via Python" {
+    python -c @"
+from google.cloud import storage
+import pathlib
+gcs = storage.Client(project='$PROJECT_ID')
+bucket = gcs.bucket('$BUCKET')
+clean = pathlib.Path(r'$CLEAN_DIR')
+if clean.exists():
+    for csv in sorted(clean.glob('*.csv')):
+        bucket.blob(f'raw/{csv.name}').upload_from_filename(str(csv))
+        print('Uploaded:', csv.name)
+else:
+    print('WARN: clean dir not found at', clean)
+"@
 }
 
 Show-Section "10. Summary"
@@ -89,9 +101,8 @@ Write-Host "  Pub/Sub Topic    : $PUBSUB_TOPIC"
 Write-Host "  Pub/Sub DLQ      : $PUBSUB_TOPIC_DLQ"
 Write-Host "  BigQuery Dataset : ${PROJECT_ID}:${DATASET}"
 Write-Host ""
-Write-Host "  Consoles:"
 Write-Host "  Storage  : https://console.cloud.google.com/storage/browser/$BUCKET"
 Write-Host "  BigQuery : https://console.cloud.google.com/bigquery?project=$PROJECT_ID"
 Write-Host ""
 Write-Host "COST REMINDER: All resources are within GCP Free Tier." -ForegroundColor Yellow
-Write-Host "Never enable Dataflow, Compute Engine or Cloud Run - they are NOT free." -ForegroundColor Yellow
+Write-Host "Never enable Dataflow, Compute Engine or Cloud Run." -ForegroundColor Yellow
