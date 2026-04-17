@@ -52,7 +52,7 @@ PARTITION_FILTERS: dict[str, str] = {
     "clients":     "DATE(registration_date) >= '2022-01-01'",
     "products":    "TRUE",
     "orders":      "DATE(order_date) >= '2022-01-01'",
-    "order_items": "order_date >= '2022-01-01'",
+    "order_items": "TRUE",  # no date column in order_items
     "incidents":   "DATE(report_date) >= '2022-01-01'",
     "page_views":  "DATE(event_datetime) >= '2022-01-01'",
 }
@@ -89,14 +89,11 @@ def check_pubsub_backlog() -> dict:
     """Check Pub/Sub subscription backlog via gcloud CLI."""
     try:
         result = subprocess.run(
-            [
-                "gcloud", "pubsub", "subscriptions", "describe", PUBSUB_SUB,
-                f"--project={PROJECT_ID}",
-                "--format=value(num_undelivered_messages)",
-            ],
+            f"gcloud pubsub subscriptions describe {PUBSUB_SUB} --project={PROJECT_ID} --format=value(num_undelivered_messages)",
             capture_output=True,
             text=True,
             timeout=30,
+            shell=True,
         )
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip())
@@ -114,16 +111,11 @@ def check_function_errors() -> dict:
     """Check last 5 Cloud Function errors via Cloud Logging."""
     try:
         result = subprocess.run(
-            [
-                "gcloud", "logging", "read",
-                'resource.type="cloud_function" severity>=ERROR',
-                f"--project={PROJECT_ID}",
-                "--limit=5",
-                "--format=json",
-            ],
+            f'gcloud logging read "resource.type=cloud_function severity>=ERROR" --project={PROJECT_ID} --limit=5 --format=json',
             capture_output=True,
             text=True,
             timeout=30,
+            shell=True,
         )
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip())

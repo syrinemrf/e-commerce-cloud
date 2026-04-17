@@ -71,7 +71,7 @@ PARTITION_FILTER: dict[str, str] = {
     "clients":     "DATE(registration_date) >= '2022-01-01'",
     "products":    "TRUE",  # no partition
     "orders":      "DATE(order_date) >= '2022-01-01'",
-    "order_items": "order_date >= '2022-01-01'",
+    "order_items": "TRUE",  # no date column in order_items
     "incidents":   "DATE(report_date) >= '2022-01-01'",
     "page_views":  "DATE(event_datetime) >= '2022-01-01'",
 }
