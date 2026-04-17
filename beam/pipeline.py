@@ -19,9 +19,8 @@ from datetime import datetime, timezone
 
 import apache_beam as beam
 from apache_beam.options.pipeline_options import PipelineOptions, StandardOptions
-from apache_beam.io.gcp.bigquery import WriteToBigQuery, BigQueryDisposition
 from dotenv import load_dotenv
-from google.cloud import pubsub_v1
+from google.cloud import pubsub_v1, bigquery as bq_client
 
 # ---------------------------------------------------------------------------
 # Logging — structured JSON
@@ -103,6 +102,14 @@ class ValidateAndEnrich(beam.DoFn):
             )
             return
 
+        # Normalize sent_at — strip timezone offset if present
+        if element.get("sent_at"):
+            try:
+                dt = datetime.fromisoformat(str(element["sent_at"]))
+                element["sent_at"] = dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+
         # Enrich with processing timestamp
         element["processing_timestamp"] = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         yield element
@@ -147,6 +154,41 @@ def pull_messages(project_id: str, subscription: str, limit: int) -> list[bytes]
 
 
 # ---------------------------------------------------------------------------
+# BQ writer DoFn — avoids WriteToBigQuery / google-cloud-bigquery version conflict
+# ---------------------------------------------------------------------------
+class WriteToBQFn(beam.DoFn):
+    """Buffer rows and write them to BigQuery via streaming inserts."""
+
+    def __init__(self, project_id: str, dataset: str, table_name: str):
+        self._project = project_id
+        self._dataset = dataset
+        self._table_name = table_name
+
+    def setup(self):
+        self._client = bq_client.Client(project=self._project)
+        self._buffer: list[dict] = []
+
+    def process(self, element):
+        self._buffer.append(element)
+        if len(self._buffer) >= 500:
+            self._flush()
+
+    def finish_bundle(self):
+        self._flush()
+
+    def _flush(self):
+        if not self._buffer:
+            return
+        table_id = f"{self._project}.{self._dataset}.{self._table_name}"
+        errors = self._client.insert_rows_json(table_id, self._buffer)
+        if errors:
+            log.error("BQ insert errors for %s: %s", table_id, errors)
+        else:
+            log.info("Inserted %d rows into %s", len(self._buffer), table_id)
+        self._buffer = []
+
+
+# ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 def build_pipeline(
@@ -169,13 +211,7 @@ def build_pipeline(
     # Valid messages → orders_stream
     (
         validated.valid
-        | "Write valid to BQ" >> WriteToBigQuery(
-            table=f"{project_id}:{dataset}.orders_stream",
-            schema=ORDERS_STREAM_SCHEMA,
-            write_disposition=BigQueryDisposition.WRITE_APPEND,
-            create_disposition=BigQueryDisposition.CREATE_NEVER,
-            method="BATCH_LOADS",
-        )
+        | "Write valid to BQ" >> beam.ParDo(WriteToBQFn(project_id, dataset, "orders_stream"))
     )
 
     # Errors from parsing + validation → pipeline_errors
@@ -184,14 +220,8 @@ def build_pipeline(
 
     (
         (parse_errors, validation_errors)
-        | "Flatten errors"    >> beam.Flatten()
-        | "Write errors to BQ" >> WriteToBigQuery(
-            table=f"{project_id}:{dataset}.pipeline_errors",
-            schema=ERRORS_SCHEMA,
-            write_disposition=BigQueryDisposition.WRITE_APPEND,
-            create_disposition=BigQueryDisposition.CREATE_NEVER,
-            method="BATCH_LOADS",
-        )
+        | "Flatten errors"     >> beam.Flatten()
+        | "Write errors to BQ" >> beam.ParDo(WriteToBQFn(project_id, dataset, "pipeline_errors"))
     )
 
 
